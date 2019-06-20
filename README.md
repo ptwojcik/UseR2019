@@ -16,7 +16,7 @@ UE regions (NUTS2 and NUTS3).
 
 ## R packages
 
-dplyr, sf, raster, ggplot2, leaflet, WDI, eurostat
+dplyr, sf, raster, tabularaster, lwgeom, ggplot2, leaflet, WDI, eurostat
 
 ## Presentation from UseR! 2019 (lightning talk)
 
