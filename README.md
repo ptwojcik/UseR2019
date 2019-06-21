@@ -1,4 +1,4 @@
-# Measuring inequalities from space. Analysis of satellite raster images with R
+# Measuring inequalities from space. Analysis of satellite raster images with R (under development)
 
 ## Abstract
 
