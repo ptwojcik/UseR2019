@@ -1,0 +1,1181 @@
+---
+author: Piotr Wójcik
+title: Measuring inequalities from space. Analysis of satellite raster images with R
+output:
+  html_document:
+    theme: spacelab
+    highlight: tango
+    number_sections: true
+    toc: true
+    toc_float: true 
+---
+Let's install needed packages.
+
+```{r, eval=FALSE}
+install.packages(c("rgdal", "rgeos", "dplyr", 
+                   "pryr", "raster", "sf",
+                   "tabularaster", "ggplot2",
+                   "ggrepel", "digest",
+                   "eurostat"))
+```
+
+```{r, warning=FALSE, message=FALSE}
+library(ggplot2)
+library(rgdal)
+library(rgeos)
+library(dplyr)
+library(raster)
+library(pryr) # object.size()
+library(sf)
+library(readr)
+library(ggrepel)
+library(tabularaster)
+library(eurostat)
+```
+
+The first detailed example will be explained for European countries. Similar analyses for European regions and US states will follow.
+
+# Step 1. importing raster data and map into R
+
+## Raster data
+
+In this tutorial I used DMSP-OLS data for 2013 zipped in [this archive](https://ngdc.noaa.gov/eog/data/web_data/v4composites/F182013.v4.tar) -- a specific file is called `F182013.v4c_web.stable_lights.avg_vis.tif` (it's size - 692 MB).
+Due to GitHub file size limitations you have to download this file manually and store in the local `files` folder.
+
+Raster data is commonly used to represent spatially continuous phenomena. A raster divides the world into a grid of equally sized rectangles (referred to as cells or, in the context of satellite remote sensing, pixels) that all have one or more values (or missing values) for the variables of interest.
+
+The `raster()` function is used to import data in the `raster` package, if the file has only one layer (i.e. for each cell / pixel there is only one value stored in it) or the `brick()` function, if there are more layers.
+
+Nighttime light data contains only one layer
+
+```{r, echo = FALSE}
+localfile <- "C:/data/_NASA_lights/F182013.v4c_web.stable_lights.avg_vis.tif"
+
+data_raster <- raster(localfile)
+```
+
+```{r, eval=FALSE}
+localfile <- "files/F182013.v4c_web.stable_lights.avg_vis.tif"
+
+data_raster <- raster(localfile)
+```
+
+## Shapefile for European countries
+
+I will limit the raster data only to the EU area. To do this, let's also load shapefile file with a map of EU countries (obtained from [Eurostat](https://ec.europa.eu/eurostat/web/gisco/geodata/reference-data/administrative-units-statistical-units) - a particular file used is `UTS_RG_10M_2016_4326_LEVL_0.shp.zip`, NUTS0 is the national level).
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts0 <- st_read("files/NUTS_RG_10M_2013_4326_LEVL_0.shp")
+plot(st_geometry(map_nuts0))
+```
+
+Let's limit the map to the mainland (we cut all the islands).
+For spatial limitation of `sf` objects one can use a function `st_crop()`, in which the second argument is the object defining the bounding box.
+
+```{r}
+# check the current bounding box
+st_bbox(map_nuts0)
+
+# define own bounding box
+my_bbox = c(xmin = -11, 
+            ymin = 30, 
+            xmax = 55.83616, 
+            ymax = 71.15304)
+
+# limit the map
+map_nuts0 <- st_crop(map_nuts0,
+                     my_bbox)
+```
+
+Lets see the map again.
+
+```{r}
+plot(st_geometry(map_nuts0))
+```
+
+One can also use `ggplot2` for mapping `sf` objects.
+
+```{r}
+ggplot(map_nuts0) +
+  geom_sf() +
+  theme_classic()
+```
+
+Presentating the values of the selected variable requires mapping its name on the `fill` aestetics.
+
+```{r}
+ggplot(map_nuts0) + 
+  geom_sf(aes(fill = CNTR_CODE)) +
+  theme_classic()
+```
+
+
+# Step 2. checking and adjusting
+
+To be able to impose a map on raster data, one has to make sure that THE SAME geographical coordinate projection is used in BOTH datasets.
+
+Let's check what are the current values of these parameters.
+
+```{r}
+crs(data_raster)
+
+crs(map_nuts0)
+```
+
+Seems identical (`WGS84`).
+
+If there is a need to unify the projections, one can simply copy the one used in the raster file into the map. The `st_transform()` function can be used for this:
+
+```{r}
+map_nuts0 <- st_transform(map_nuts0,
+                          crs(data_raster)@projargs)
+```
+
+
+# Step 3. limitation of the extent of raster data
+
+To apply spatial limitation of the raster data set one has to use a function `crop()`, in which the second argument is the extent of the area. It must be an `Extent` class object, resulting from the use of the `extent()` function.
+
+Lets see the extent of our raster data and for the map:
+
+```{r}  
+extent(data_raster)
+
+extent(map_nuts0)
+```
+
+We crop the raster data to the rectangle, where the European Union is located.
+
+```{r}
+data_raster_EU <- crop(data_raster,      # source data
+                       extent(map_nuts0)) # extent
+```
+
+Let's see the result.
+
+```{r}
+plot(data_raster_EU)
+```
+
+```{r, echo = FALSE}
+png(filename = "pics/01_map_UE_raster.png", 
+    width = 1000, height = 800)
+plot(data_raster_EU)
+dev.off()
+```
+
+One can clearly see European continent and major cities. Lets super-impose the map of EU regions.
+
+```{r}
+plot(data_raster_EU)
+plot(st_geometry(map_nuts0),
+     add = TRUE) # added on previous map
+```
+
+```{r}
+png(filename = "pics/02_map_UE_raster_geometry.png", 
+    width = 1000, height = 800)
+plot(data_raster_EU)
+plot(st_geometry(map_nuts0),
+     add = TRUE) # added on previous map
+dev.off()
+```
+
+This data still contains areas outside the EU. Raster data for pixels outside the polygons can be reemoved (set to missing) with the `mask()` function.
+
+```{r}
+data_raster_EU <- mask(data_raster_EU, 
+                       mask = map_nuts0)
+```
+
+The more polygons (regions), the more time it takes (here ca. 40 seconds).
+
+Let's display data truncated to the EU area imposing once again the grid of countries borders.
+
+```{r}
+plot(data_raster_EU)
+plot(st_geometry(map_nuts0), 
+     add = TRUE)
+```
+
+```{r, echo=FALSE}
+png(filename = "pics/03_map_UE_raster_geometry_masked.png", 
+    width = 1000, height = 800)
+plot(data_raster_EU)
+plot(st_geometry(map_nuts0), 
+     add = TRUE)
+dev.off()
+```
+
+Data have been correctly restricted to the European Union area.
+
+# Step 4. aggregation to spatial units
+
+Very efficient identification and aggregation of data for selected areas can be done by using the `cellnumbers()` function from the [`tabularaster` package by Michael D. Sumner](https://cran.r-project.org/web/packages/tabularaster/vignettes/tabularaster-usage.html). It allows to identify numbers (indexes) of cells located in every region (polygon in the map object). And aggregation based on indexed data is ca. 500 times faster than with using purely the `extract()` function.
+
+The only problem here is that some of the countries have several islands (the geometry of type MULTIPOLYGON) which is not YET SUPPORTED by `cellnumbers()`.
+
+So for this simple example lets convert all geometries to just `POLYGON`s (inc case of a `MULTIPOLYGON` only the first will be used).
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts0 <- st_cast(map_nuts0, "POLYGON")
+```
+
+And finally the aggregation.
+
+```{r}
+# identify numbers (indexes) of cells located
+# in every region (polygon in the map object)
+cell <- cellnumbers(data_raster_EU,
+                    map_nuts0)
+# which creates a data.frame with 
+# two columns: object_ and cell_
+
+# and then aggregate the values 
+# for all cell_(s)  by object_
+
+cell %>% 
+  mutate(light = raster::extract(data_raster_EU, 
+                                 cell$cell_)) %>% 
+  group_by(object_) %>% 
+  summarise(lights = sum(light, na.rm = TRUE)) -> lights_NUTS0
+```
+
+Lets add a new column to the map data frame.
+
+```{r}
+map_nuts0$lights2013 <- lights_NUTS0$lights
+```
+
+and plot it on a map 
+
+```{r}
+ggplot(map_nuts0) + 
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic()
+```
+```{r, eval=FALSE}
+ggplot(map_nuts0) + 
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic() -> map_lights_NUTS0
+
+ggsave(plot = map_lights_NUTS0,
+       filename = "pics/04_map_lights_NUTS0.png",
+       width = 10, height = 8)
+```
+
+# Correlations with statistical data 
+
+Lets in addtion import data on GDP and population from Eurostat.
+
+```{r}
+eurostat <- read_csv("files/Eurostat_data.csv")
+```
+
+To merge them correctly I convert all values to character.
+
+```{r}
+map_nuts0$NUTS_ID <- as.character(map_nuts0$NUTS_ID)
+eurostat$NUTS_ID <- as.character(eurostat$NUTS_ID)
+
+map_nuts0_2 <- 
+  map_nuts0 %>% 
+  left_join(eurostat, by = "NUTS_ID")
+```
+
+Lets check correlations between lights, log(lights) and GDP, GDP per capita and population.
+
+```{r}
+map_nuts0_2 %>% 
+  mutate(l_lights2013 = log(lights2013)) %>% 
+  dplyr::select(population2013, gdp2013, gdpcap2013, lights2013, l_lights2013) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "pairwise.complete.obs") 
+```
+
+Scatterplot between GDP and lights.
+
+```{r, warning=FALSE}
+ggplot(map_nuts0_2,
+       aes(x = gdp2013/1e+06,
+           y = lights2013/1e+06)) +
+  xlab("gdp2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_nuts0_2 %>% 
+                     filter(gdp2013/1e+06 > 1 | lights2013/1e+06 > 3),
+                   aes(label = NUTS_ID),
+                   size = 5) +
+  geom_text(x = 2, y = 3,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.88") +
+  geom_text(x = 2, y = 2,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.63") +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in EU countries") +
+  theme_bw() -> scatter_lights_GDP_NUTS0
+```  
+
+```{r, echo=FALSE }
+ggsave(plot = scatter_lights_GDP_NUTS0,
+       filename = "pics/05_scatter_lights_GDP_NUTS0.png",
+       width = 6, height = 6)
+```
+
+Scatterplot between population and lights.
+
+```{r, warning=FALSE}
+ggplot(map_nuts0_2,
+       aes(x = population2013/1e+04,
+           y = lights2013/1e+06)) +
+  xlab("population2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_nuts0_2 %>% 
+                     filter(population2013/1e+04 > 3 | lights2013/1e+06 > 3),
+                   aes(label = NUTS_ID),
+                   size = 5) +
+  geom_text(x = 5.5, y = 3,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.88") +
+  geom_text(x = 5.5, y = 2,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.67") +
+  # title
+  ggtitle("Night lights vs population in 2013 in EU countries") +
+  theme_bw() -> scatter_lights_pop_NUTS0
+```
+
+```{r, echo=FALSE}
+ggsave(plot = scatter_lights_pop_NUTS0,
+       filename = "pics/06_scatter_lights_pop_NUTS0.png",
+       width = 6, height = 6)
+```
+
+# Similar analysis for European NUTS 2 regions
+
+## Importing shapefile
+
+Import shapefile for European NUTS2 regions and limit its area to the mainland of Europe (cut the islands as before).
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts2 <- st_read("files/NUTS_RG_10M_2013_4326_LEVL_2.shp")
+```
+
+```{r, error=TRUE}
+map_nuts2 <- st_crop(map_nuts2,
+                     my_bbox)
+```
+          
+## Checking validity
+
+To be able to limit the raster data to the desired area one has to make sure that should check if all geometries in the `sf` object are valid. Intuitively the two-dimensional geometry (`POLYGON`) is valid, if its boundaries are created from subsequent **connecting**, but **non-overlapping** and **non-intersecting** sections. `MULTIPOLYGON` geometry is valid if it consists of valid POLYGONs.
+
+Checking the validity of the geometries of the analyzed objects can be time-consuming (especially for very complex geometries), but it saves problems in their subsequent visualization or analysis.
+
+```{r}
+table(st_is_valid(map_nuts2))
+```
+
+Nine regions have incorrect geometries. They might me automatically corrected with `st_make_valid()` function from `lwgeom` package, which is the extension of `sf`. Its description can be found here: [github.com/r-spatial/lwgeom](https://github.com/r-spatial/lwgeom).
+
+```{r}
+map_nuts2 <- lwgeom::st_make_valid(map_nuts2)
+```
+
+And apply the `crop()` function once again.
+
+```{r}
+map_nuts2 <- st_crop(map_nuts2,
+                     my_bbox)
+```                
+
+Now it works fine.
+Next we adjust the coordinates.
+
+```{r}
+map_nuts2 <- st_transform(map_nuts2,
+                          crs(data_raster_EU)@projargs)
+```
+
+And plot the map of EU NUTS2 regions superimposed on night-time lights distribution.
+
+```{r}
+plot(data_raster_EU)
+plot(st_geometry(map_nuts2),
+     add = TRUE) # added on previous map
+```
+
+```{r, echo=FALSE}
+png(filename = "pics/10_mapa_UE_raster_geometry_NUTS2.png", 
+    width = 1000, height = 800)
+plot(data_raster_EU)
+plot(st_geometry(map_nuts2),
+     add = TRUE) # added on previous map
+dev.off()
+```
+
+## Aggregation
+
+For the use of `cellnumbers()` we need to simplify complex geometries to just POLYGONs.
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts2 <- st_cast(map_nuts2, "POLYGON")
+```
+
+And apply aggregation.
+
+```{r}
+cell <- cellnumbers(data_raster_EU,
+                    map_nuts2)
+cell %>% 
+  mutate(light = raster::extract(data_raster_EU, 
+                                 cell$cell_)) %>% 
+  group_by(object_) %>% 
+  summarise(lights = sum(light, na.rm = TRUE)) -> lights_nuts2
+```
+
+Lets add a new column to the map data frame.
+
+```{r, error=TRUE}
+map_nuts2$lights2013 <- lights_nuts2$lights
+```
+
+Lights data is missing for one region - which?
+
+```{r}
+(which_missing <- which(!1:311 %in% lights_nuts2$object_))
+
+map_nuts2[which_missing,]
+plot(map_nuts2[which_missing,"CNTR_CODE"])
+```
+
+This region has a very strange shape -- for simplicity, let's assume it has the intensity of night lights equal to 0.
+
+```{r}
+lights_nuts2 <- lights_nuts2 %>% 
+  rbind(., data.frame(object_ = which_missing,
+                      lights = 0)) %>% 
+  arrange(object_)
+```
+
+Add a new column to the map data frame.
+
+```{r}
+map_nuts2$lights2013 <- lights_nuts2$lights
+```
+
+And finally plot it on a map
+
+```{r, warning=FALSE}
+ggplot(map_nuts2) +
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic()
+```
+
+```{r, echo=FALSE}
+ggplot(map_nuts2) +
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic() -> map_lights_nuts2
+
+ggsave(plot = map_lights_nuts2,
+       filename = "pics/12_map_lights_nuts2.png",
+       width = 10)
+```
+
+## Importing data from Eurostat
+
+Lets in addtion import data on GDP and population for regions directly from Eurostat - with the use of `eurostat` package -- see [package tutorial](https://ropengov.github.io/eurostat/articles/eurostat_tutorial.html).
+
+To download data, you need to know their codes used by Eurostat.
+
+This can be checked on the [Eurostat website](https://ec.europa.eu/eurostat/data/database) or in particular reports, for example [GDP at regional level](http://ec.europa.eu/eurostat/statistics-explained/index.php/GDP_at_regional_level), [Population statistics at regional level](http://ec.europa.eu/eurostat/statistics-explained/index.php/Population_statistics_at_regional_level).
+
+You can also check them by searching the Eurostat database by keywords:
+
+```{r}
+results <- search_eurostat("GDP")
+head(results[, 1:3])
+```
+
+Let's download the GDP figures in the NUTS2 regions (`nama_10r_2gdp`).
+
+```{r}
+gdp <- get_eurostat("nama_10r_2gdp", 
+                    time_format = "num")
+
+# filter just global GDP in PPS for 2013
+gdp <- gdp %>%
+  filter(time == 2013,
+         unit == "MIO_PPS")
+```
+
+Similarly for population figures.
+
+```{r}
+pop <- get_eurostat("nama_10r_3popgdp", 
+                    time_format = "num")
+
+pop <- pop %>%
+  filter(time == 2013)
+```
+
+We need to add this data to the `sf` object with geometries - all datasets use common Eurostat codes for regions, but columns have different names.
+
+```{r}
+map_nuts2 <- map_nuts2 %>% 
+  left_join(gdp %>% dplyr::select(geo, values), 
+            by = c("NUTS_ID" = "geo")) %>% 
+  dplyr::rename(gdp2013 = values) %>% 
+  left_join(pop %>% dplyr::select(geo, values), 
+            by = c("NUTS_ID" = "geo")) %>% 
+  dplyr::rename(pop2013 = values)
+```
+
+## Correlations
+
+Finally we check for correlations.
+
+```{r}
+map_nuts2 %>% 
+  mutate(l_lights2013 = log(lights2013 + 1)) %>%
+  # bo był jeden region z zerem 
+  dplyr::select(ends_with("2013")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "pairwise.complete.obs")
+```
+
+And make a scatterplot between GDP and lights
+
+```{r, warning=FALSE}
+ggplot(map_nuts2,
+       aes(x = gdp2013/100000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("gdp2013") + ylab("lights2013") +
+  geom_text(x = 2.5, y = 17,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.35") +
+  geom_text(x = 2.5, y = 15,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.23") +
+  geom_label_repel(data = map_nuts2 %>% 
+                     filter(gdp2013/100000 > 2 | lights2013/100000 > 10),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in EU regions (NUTS 2)") +
+  theme_bw()
+```
+
+```{r, echo=FALSE}
+ggplot(map_nuts2,
+       aes(x = gdp2013/100000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("gdp2013") + ylab("lights2013") +
+  geom_text(x = 2.5, y = 17,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.35") +
+  geom_text(x = 2.5, y = 15,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.23") +
+  geom_label_repel(data = map_nuts2 %>% 
+                     filter(gdp2013/100000 > 2 | lights2013/100000 > 10),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in EU regions (NUTS 2)") +
+  theme_bw() -> scatter_lights_GDP_nuts2
+
+ggsave(plot = scatter_lights_GDP_nuts2,
+       filename = "pics/13_scatter_lights_GDP_nuts2.png",
+       width = 6, height = 6)
+```
+Scatterplot between ligts and population in NUTS2 regions.
+
+```{r, warning=FALSE}
+ggplot(map_nuts2,
+       aes(x = pop2013/1000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("pop2013") + ylab("lights2013") +
+  geom_text(x = 10, y = 17,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.42") +
+  geom_text(x = 10, y = 15,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.66") +
+  geom_label_repel(data = map_nuts2 %>% 
+                     filter(pop2013/1000 > 7 | lights2013/100000 > 10),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  # title
+  ggtitle("Night lights vs population in 2013 in EU regions (NUTS 2)") +
+  theme_bw()
+```
+
+```{r, echo=FALSE}
+ggplot(map_nuts2,
+       aes(x = pop2013/1000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("pop2013") + ylab("lights2013") +
+  geom_text(x = 10, y = 17,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.42") +
+  geom_text(x = 10, y = 15,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.66") +
+  geom_label_repel(data = map_nuts2 %>% 
+                     filter(pop2013/1000 > 7 | lights2013/100000 > 10),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  # title
+  ggtitle("Night lights vs population in 2013 in EU regions (NUTS 2)") +
+  theme_bw() -> scatter_lights_pop_nuts2
+
+ggsave(plot = scatter_lights_pop_nuts2,
+       filename = "pics/14_scatter_lights_pop_nuts2.png",
+       width = 6, height = 6)
+```
+
+
+# Analysis for NUTS 3 regions
+
+## Importing shapefile
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts3 <- st_read("files/NUTS_RG_10M_2013_4326_LEVL_3.shp")
+```
+
+## Validation and adjustment
+
+```{r}
+map_nuts3 <- lwgeom::st_make_valid(map_nuts3)
+
+map_nuts3 <- st_crop(map_nuts3,
+                     my_bbox)
+
+map_nuts3 <- st_transform(map_nuts3,
+                          crs(data_raster_EU)@projargs)
+```
+
+Map of EU NUTS3 regions imposed on night-time lights intensity.
+
+```{r}
+plot(data_raster_EU)
+plot(st_geometry(map_nuts3),
+     add = TRUE) # added on previous map
+```
+
+```{r,echo=FALSE}
+png(filename = "pics/10a_mapa_UE_raster_geometry_NUTS3.png", 
+    width = 1000, height = 800)
+plot(data_raster_EU)
+plot(st_geometry(map_nuts3),
+     add = TRUE) # added on previous map
+dev.off()
+```
+
+## Aggregation
+
+```{r, message=FALSE, warning=FALSE}
+map_nuts3 <- st_cast(map_nuts3, "POLYGON")
+
+cell <- cellnumbers(data_raster_EU,
+                    map_nuts3)
+
+cell %>% 
+  mutate(light = raster::extract(data_raster_EU, 
+                                 cell$cell_)) %>%
+      group_by(object_) %>% 
+  summarise(lights = sum(light, 
+                         na.rm = TRUE)) -> lights_nuts3
+
+map_nuts3$lights2013 <- lights_nuts3$lights
+```
+
+Visualization on a map 
+
+```{r, warning=FALSE}
+ggplot(map_nuts3) +
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic()
+```
+
+```{r, echo=FALSE}
+ggplot(map_nuts3) +
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic() -> map_ligts_nuts3
+
+ggsave(plot = map_ligts_nuts3,
+       filename = "pics/12a_map_lights_nuts3.png",
+       width = 10)
+```
+
+## Data from Eurostat for NUTS3 regions
+
+```{r}
+gdp <- get_eurostat("nama_10r_3gdp", 
+                    time_format = "num")
+
+gdp <- gdp %>%
+  filter(time == 2013,
+         unit == "MIO_PPS")
+
+pop <- get_eurostat("nama_10r_3popgdp", 
+                    time_format = "num")
+
+pop <- pop %>%
+  filter(time == 2013)
+```
+
+Merging the dada with the `sf` object.
+
+```{r}
+map_nuts3 <- map_nuts3 %>% 
+  left_join(gdp %>% dplyr::select(geo, values), 
+            by = c("NUTS_ID" = "geo")) %>% 
+  dplyr::rename(gdp2013 = values) %>% 
+  left_join(pop %>% dplyr::select(geo, values), 
+            by = c("NUTS_ID" = "geo")) %>% 
+  dplyr::rename(pop2013 = values)
+```
+
+And checking correlations.
+
+```{r}
+map_nuts3 %>% 
+  mutate(l_lights2013 = log(lights2013 + 1)) %>%
+  # bo był jeden region z zerem 
+  dplyr::select(ends_with("2013")) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "pairwise.complete.obs")
+```
+
+Scatterplot between lights and GDP
+
+```{r, warning=FALSE}
+ggplot(map_nuts3,
+       aes(x = gdp2013/10000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("gdp2013") + ylab("lights2013") +
+  geom_text(x = 17, y = 6,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.36") +
+  geom_text(x = 17, y = 5.5,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.28") +
+  geom_label_repel(data = map_nuts3 %>% 
+                     filter(gdp2013/10000 > 10 | lights2013/100000 > 4),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in EU regions (NUTS 3)") +
+  theme_bw()
+```
+
+```{r, echo=FALSE}
+ggplot(map_nuts3,
+       aes(x = gdp2013/10000,
+           y = lights2013/100000)) +
+  # points 
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("gdp2013") + ylab("lights2013") +
+  geom_text(x = 14, y = 6,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.36") +
+  geom_text(x = 14, y = 5.5,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.28") +
+  geom_label_repel(data = map_nuts3 %>% 
+                     filter(gdp2013/10000 > 10 | lights2013/100000 > 4),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  ggtitle("Night lights vs GDP in 2013 in EU regions (NUTS 3)") +
+  theme_bw() -> scatter_lights_GDP_nuts3
+
+ggsave(plot = scatter_lights_GDP_nuts3,
+       filename = "pics/13a_scatter_lights_GDP_nuts3.png",
+       width = 8, 
+       height = 8)
+```
+
+Scatterplot between population and nighttime lights intensity.
+
+```{r, warning=FALSE}
+ggplot(map_nuts3,
+       aes(x = pop2013/1000,
+           y = lights2013/100000)) +
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("pop2013") + ylab("lights2013") +
+  geom_text(x = 4, y = 6,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.51") +
+  geom_text(x = 4, y = 5.5,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.46") +
+  geom_label_repel(data = map_nuts3 %>% 
+                     filter(pop2013/1000 > 2 | lights2013/100000 > 3.8),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  ggtitle("Night lights vs population in 2013 in EU regions (NUTS 3)") +
+  theme_bw()
+```
+
+```{r, warning=FALSE}
+ggplot(map_nuts3,
+       aes(x = pop2013/1000,
+           y = lights2013/100000)) +
+  geom_point(size = 5, 
+             colour = "darkblue") +
+  geom_smooth(method = "lm", se = FALSE) +
+  xlab("pop2013") + ylab("lights2013") +
+  geom_text(x = 4, y = 6,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.51") +
+  geom_text(x = 4, y = 5.5,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.46") +
+  geom_label_repel(data = map_nuts3 %>% 
+                     filter(pop2013/1000 > 2 | lights2013/100000 > 3.8),
+                   aes(label = NUTS_NAME),
+                   size = 5) +
+  ggtitle("Night lights vs population in 2013 in EU regions (NUTS 3)") +
+  theme_bw() -> scatter_lights_pop_nuts3
+
+ggsave(plot = scatter_lights_pop_nuts3,
+       filename = "pics/14a_scatter_lights_pop_nuts3.png",
+       width = 8, height = 8)
+```
+
+
+# Analysis for US states
+
+## Import shapefile
+
+```{r, message=FALSE, warning=FALSE}
+map_US <- st_read("files/tl_2018_us_state.shp")
+
+plot(st_geometry(map_US))
+```
+
+## Adjusting 
+
+Adjusting coordinates projections between shapefile and raster data. 
+
+```{r}
+map_US <- st_transform(map_US, 
+                       crs(data_raster)@projargs)
+```
+
+Checking validity.
+
+```{r}
+table(st_is_valid(map_US))
+```
+
+Limiting the bounding box.
+
+```{r}
+my_bbox = c(xmin = -125,
+            ymin = 25, 
+            xmax = -65, 
+            ymax = 50)
+
+map_US2 <- st_crop(map_US,
+                   my_bbox)
+
+plot(st_geometry(map_US2))
+```
+
+## Limiting raster data to the area of US
+
+Then raster image is cropped to the are of US.
+
+```{r}
+data_raster_US <- crop(data_raster,    # source data
+                       extent(map_US2)) # extent
+
+plot(data_raster_US)
+plot(st_geometry(map_US2),
+     add = TRUE)
+```
+
+```{r, echo = FALSE}
+png(filename = "pics/22_mapa_US_raster_geometry.png", 
+    width = 1000, height = 800)
+plot(data_raster_US)
+plot(st_geometry(map_US2),
+     add = TRUE)
+dev.off()
+```
+One can clearly identify major US cities.
+
+Masking the data for areas outside USA. 
+
+```{r}
+data_raster_US <- mask(data_raster_US, 
+                       mask = map_US2)
+
+plot(data_raster_US)
+plot(st_geometry(map_US2), 
+     add = TRUE)
+```
+
+And display data truncated to the US area imposing once again the grid of states borders.
+
+```{r, echo=FALSE}
+png(filename = "pics/23_mapa_US_raster_geometry_masked.png", 
+    width = 1000, height = 800)
+plot(data_raster_US)
+plot(st_geometry(map_US2), 
+     add = TRUE)
+dev.off()
+```
+
+## Aggregation of lights to states
+
+```{r, message=FALSE, warning=FALSE}
+map_US2 <- st_cast(map_US2, "POLYGON")
+
+cell <- cellnumbers(data_raster_US,
+                    map_US2)
+cell %>% 
+  mutate(light = raster::extract(data_raster_US, 
+                                 cell$cell_)) %>%
+    group_by(object_) %>% 
+  summarise(lights = sum(light, 
+                         na.rm = TRUE)) -> lights_US
+
+map_US2$lights2013 <- lights_US$lights
+```
+
+Result on a map. 
+
+```{r, warning=FALSE}
+ggplot(map_US2) + 
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic()
+
+```
+
+```{r, echo=FALSE}
+ggplot(map_US2) + 
+  geom_sf(aes(fill = lights2013)) +
+  coord_sf() +
+  scale_fill_gradient(low = "black", high = "yellow") +
+  guides(fill = FALSE) +
+  theme_classic() -> map_ligts_US
+
+ggsave(plot = map_ligts_US,
+       filename = "pics/24_map_ligts_US.png",
+       width = 10, height = 8)
+```
+
+## Correlation with census data
+
+Importing data about state GDP and population.
+
+```{r}
+census <- read_csv("files/US_data_GDP_pop.csv")
+```
+
+To merge the data correctly let's convert all state codes in a map file to character values.
+
+```{r}
+map_US2$code <- as.character(map_US2$STUSPS)
+
+map_US2_2 <- 
+  map_US2 %>% 
+  left_join(census, by = "code")
+```
+
+Correlation matrix 
+
+```{r}
+map_US2_2 %>% 
+  mutate(l_lights2013 = log(lights2013)) %>% 
+  dplyr::select(lights2013, l_lights2013, gdp2013, pop2013) %>% 
+  st_drop_geometry() %>% 
+  cor(use = "pairwise.complete.obs")
+```
+
+Scatterplot between GDP and lights in US states.
+
+```{r, warning=FALSE}
+ggplot(map_US2_2,
+       aes(x = gdp2013/1e+5,
+           y = lights2013/1e+5)) +
+  xlab("gdp2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_US2_2 %>% 
+                     filter(gdp2013/1e+5 > 10),
+                     aes(label = code),
+                   size = 5) +
+  geom_text(x = 15, y = 15,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.78") +
+  geom_text(x = 15, y = 10,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.82") +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in US states") +
+  theme_bw()
+```
+
+```{r, echo=FALSE}
+ggplot(map_US2_2,
+       aes(x = gdp2013/1e+5,
+           y = lights2013/1e+5)) +
+  xlab("gdp2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_US2_2 %>% 
+                     filter(gdp2013/1e+5 > 10),
+                     aes(label = code),
+                   size = 5) +
+  geom_text(x = 15, y = 15,
+            size = 8,
+            label = "cor(GDP, NTLI) = 0.78") +
+  geom_text(x = 15, y = 10,
+            size = 8,
+            label = "cor(GDP, lnNTLI) = 0.82") +
+  # title
+  ggtitle("Night lights vs GDP in 2013 in US states") +
+  theme_bw() -> scatter_lights_GDP_US
+
+ggsave(plot = scatter_lights_GDP_US,
+       filename = "pics/25_scatter_lights_GDP_US.png",
+       width = 6, height = 6)
+```
+
+Scatterplot between population and lights in US states.
+
+```{r, warning=FALSE}
+ggplot(map_US2_2,
+       aes(x = pop2013/1e+5,
+           y = lights2013/1e+5)) +
+  xlab("pop2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_US2_2 %>% 
+                     filter(pop2013/1e+5 > 150),
+                   aes(label = code),
+                   size = 5) +
+  geom_text(x = 250, y = 15,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.83") +
+  geom_text(x = 250, y = 10,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.63") +
+  # title
+  ggtitle("Night lights vs population in 2013 in US states") +
+  theme_bw()
+```
+
+```{r,echo=FALSE}
+ggplot(map_US2_2,
+       aes(x = pop2013/1e+5,
+           y = lights2013/1e+5)) +
+  xlab("pop2013") +
+  ylab("lights2013") +
+  # points 
+  geom_point(size = 5, 
+             col = "darkblue") +
+  # regression line added
+  geom_smooth(method = "lm", se = FALSE) +
+  # labels with country codes added
+  geom_label_repel(data = map_US2_2 %>% 
+                     filter(pop2013/1e+5 > 150),
+                   aes(label = code),
+                   size = 5) +
+  geom_text(x = 250, y = 15,
+            size = 8,
+            label = "cor(pop, NTLI) = 0.83") +
+  geom_text(x = 250, y = 10,
+            size = 8,
+            label = "cor(pop, lnNTLI) = 0.63") +
+  # title
+  ggtitle("Night lights vs population in 2013 in US states") +
+  theme_bw() -> scatter_lights_pop_US
+
+ggsave(plot = scatter_lights_pop_US,
+       filename = "pics/26_scatter_lights_pop_US.png",
+       width = 6, height = 6)
+```
