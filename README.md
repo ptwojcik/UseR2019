@@ -18,7 +18,7 @@ UE regions (NUTS2 and NUTS3).
 
 dplyr, sf, raster, tabularaster, lwgeom, ggplot2, leaflet, WDI, eurostat
 
-## Presentation from UseR! 2019 (lightning talk)
+## [Presentation from UseR! 2019 (lightning talk)](Pwojcik_UseR2019_prez.pdf)
 
 ## Extended materials
 
