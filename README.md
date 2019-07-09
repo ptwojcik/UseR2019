@@ -20,7 +20,7 @@ dplyr, sf, raster, tabularaster, lwgeom, ggplot2, leaflet, WDI, eurostat
 
 ## [Presentation from UseR! 2019 (lightning talk)](Pwojcik_UseR2019_prez.pdf)
 
-## [HTML output of RMarkdown file with analyses](UseR2019_lights.html)
+## [HTML output of RMarkdown file with analyses](http://datascience.wne.uw.edu.pl/UseR2019_lights.html)
 
 ## Author: Piotr Wójcik
 
