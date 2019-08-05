@@ -36,7 +36,7 @@ dplyr, sf, raster, tabularaster, lwgeom, ggplot2, WDI, eurostat
 * NTLI data can be **agregated** to the level of any territorial units
 
 > In this tutorial I used DMSP-OLS data for 2013 zipped in [this archive](https://ngdc.noaa.gov/eog/data/web_data/v4composites/F182013.v4.tar) -- a specific file is called `F182013.v4c_web.stable_lights.avg_vis.tif` (it's size - 692 MB).
-> Due to GitHub file size limitations you have to download this file manually and store in the local `files` folder.
+> Due to GitHub file size limitations you have to download this file manually and store it in the local `files` folder.
 
 ## Limitations of NTLI data
 
